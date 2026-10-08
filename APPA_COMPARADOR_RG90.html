@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Comparador RG 90 - DNIT Paraguay</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 1400px; margin: 20px auto; padding: 20px; background-color: #f4f6f9; }
+  .container { background: white; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+  .upload-row { display: flex; gap: 20px; margin-bottom: 20px; }
+  .upload-box { flex: 1; border: 2px dashed #3498db; padding: 20px; border-radius: 8px; text-align: center; background: #ebf5fb; cursor: pointer; }
+  .upload-box.dragover { background: #d4e6f1; border-color: #2980b9; }
+  .config-row { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; background: #f8f9fa; padding: 15px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #dee2e6; }
+  .config-row select, .config-row input { padding: 8px; border: 1px solid #ced4da; border-radius: 4px; }
+  button { background: #27ae60; color: white; padding: 12px 30px; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; }
+  button:hover { background: #219150; }
+  .results { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
+  .panel { border: 1px solid #ddd; border-radius: 8px; padding: 15px; background: white; }
+  .panel h3 { margin-top: 0; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+  .panel.only1 h3 { color: #c0392b; border-color: #e74c3c; }
+  .panel.only2 h3 { color: #27ae60; border-color: #2ecc71; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+  th, td { border: 1px solid #ddd; padding: 6px; text-align: left; }
+  th { background: #f2f2f2; font-weight: 600; }
+  tr:nth-child(even) { background-color: #f9f9f9; }
+  .badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; color: white; }
+  .badge.diff { background-color: #e67e22; } /* Naranja para discrepancias */
+  .badge.only { background-color: #95a5a6; } /* Gris para solo en una planilla */
+  .info-box { background: #fff3cd; color: #856404; padding: 10px; border-radius: 6px; margin-bottom: 15px; display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🇵🇾 Comparador de Planillas - RG 90 DNIT</h1>
+  <p style="color: #666; margin-bottom: 20px;">Sube la planilla de <b>Marangatu</b> y la de tu <b>Sistema Contable</b> para encontrar diferencias.</p>
+
+  <div class="upload-row">
+    <div class="upload-box" id="box1">
+      <h3>📁 Planilla Marangatu (Sistema)</h3>
+      <input type="file" id="file1" accept=".xlsx,.xls,.csv" style="display:none">
+      <p id="name1">Arrastra o haz clic aquí</p>
+    </div>
+    <div class="upload-box" id="box2">
+      <h3>📁 Planilla Sistema Contable</h3>
+      <input type="file" id="file2" accept=".xlsx,.xls,.csv" style="display:none">
+      <p id="name2">Arrastra o haz clic aquí</p>
+    </div>
+  </div>
+
+  <div class="config-row">
+    <label><b>Columna N° Factura:</b> <select id="colFactura"></select></label>
+    <label><b>Columna RUC:</b> <select id="colRuc"></select></label>
+    <label><b>Columna Fecha:</b> <select id="colFecha"></select></label>
+    <label><b>Columna Monto:</b> <select id="colMonto"></select></label>
+    <button onclick="ejecutarComparacion()" style="margin-left: auto;">🔍 Comparar</button>
+  </div>
+
+  <div id="info" class="info-box"></div>
+
+  <div class="results">
+    <div class="panel only1">
+      <h3>❌ Solo en Marangatu (<span id="count1">0</span>)</h3>
+      <div style="font-size: 12px; color: #888; margin-bottom: 5px;">Facturas que están en el sistema pero no en la contabilidad</div>
+      <div id="result1"></div>
+    </div>
+    <div class="panel only2">
+      <h3>❌ Solo en Sistema Contable (<span id="count2">0</span>)</h3>
+      <div style="font-size: 12px; color: #888; margin-bottom: 5px;">Facturas cargadas en contabilidad que no están en Marangatu</div>
+      <div id="result2"></div>
+    </div>
+  </div>
+  
+  <div id="discrepancias" style="margin-top: 20px; display: none;">
+      <div class="panel" style="border-color: #e67e22;">
+          <h3 style="color: #e67e22;">⚠️ Discrepancias en Monto/Fecha (<span id="countDiff">0</span>)</h3>
+          <div style="font-size: 12px; color: #888; margin-bottom: 5px;">Misma factura en ambas planillas, pero con diferencias en Monto o Fecha.</div>
+          <div id="resultDiff"></div>
+      </div>
+  </div>
+</div>
+
+<script>
+let data1 = [], data2 = [];
+let headers1 = [], headers2 = [];
+
+function leerArchivo(file, callback) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const wb = XLSX.read(e.target.result, { type: 'binary' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const json = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false }); // raw false para forzar strings
+    const headers = json.length > 0 ? Object.keys(json[0]) : [];
+    callback(json, headers);
+  };
+  reader.readAsBinaryString(file);
+}
+
+function setupUpload(inputId, boxId, nameId, callback) {
+  const input = document.getElementById(inputId);
+  const box = document.getElementById(boxId);
+  const name = document.getElementById(nameId);
+
+  box.addEventListener('click', () => input.click());
+  
+  input.addEventListener('change', (e) => {
+    if (e.target.files[0]) {
+      name.textContent = '✅ ' + e.target.files[0].name;
+      leerArchivo(e.target.files[0], callback);
+    }
+  });
+
+  box.addEventListener('dragover', (e) => { e.preventDefault(); box.classList.add('dragover'); });
+  box.addEventListener('dragleave', () => box.classList.remove('dragover'));
+  box.addEventListener('drop', (e) => {
+    e.preventDefault();
+    box.classList.remove('dragover');
+    if (e.dataTransfer.files[0]) {
+      name.textContent = '✅ ' + e.dataTransfer.files[0].name;
+      leerArchivo(e.dataTransfer.files[0], callback);
+    }
+  });
+}
+
+setupUpload('file1', 'box1', 'name1', (d, h) => { data1 = d; headers1 = h; actualizarSelectores(); });
+setupUpload('file2', 'box2', 'name2', (d, h) => { data2 = d; headers2 = h; actualizarSelectores(); });
+
+function actualizarSelectores() {
+    const allHeaders = [...new Set([...headers1, ...headers2])];
+    const selects = ['colFactura', 'colRuc', 'colFecha', 'colMonto'];
+    selects.forEach(id => {
+        const sel = document.getElementById(id);
+        sel.innerHTML = '<option value="">-- Seleccionar --</option>';
+        allHeaders.forEach(h => {
+            const opt = document.createElement('option');
+            opt.value = h;
+            opt.textContent = h;
+            sel.appendChild(opt);
+        });
+    });
+    // Auto-detectar nombres comunes (opcional)
+    autoDetectar('colFactura', ['factura', 'nro', 'numero', 'comprobante']);
+    autoDetectar('colRuc', ['ruc', 'proveedor', 'cliente', 'razon']);
+    autoDetectar('colFecha', ['fecha', 'emision']);
+    autoDetectar('colMonto', ['monto', 'total', 'importe', 'gravado']);
+}
+
+function autoDetectar(selectId, keywords) {
+    const sel = document.getElementById(selectId);
+    for (let i = 0; i < sel.options.length; i++) {
+        const text = sel.options[i].text.toLowerCase();
+        if (keywords.some(k => text.includes(k))) {
+            sel.selectedIndex = i;
+            return;
+        }
+    }
+}
+
+function limpiarRuc(ruc) {
+    if (!ruc) return '';
+    // Elimina puntos, guiones y espacios. Convierte a mayúsculas.
+    return String(ruc).replace(/[\.\-\s]/g, '').toUpperCase();
+}
+
+function limpiarFactura(factura) {
+    if (!factura) return '';
+    // Elimina espacios y pasa a mayúsculas. Opcional: quitar guiones si se desea (riesgoso en Paraguay porque el formato 001-001-0000123 es común)
+    // Lo dejamos tal cual pero sin espacios.
+    return String(factura).trim().toUpperCase();
+}
+
+function limpiarMonto(monto) {
+    if (!monto) return '0';
+    // Convierte a string, elimina puntos de miles, cambia coma decimal por punto
+    let m = String(monto).replace(/\./g, '').replace(',', '.');
+    // Si no tiene decimales, lo dejamos así. Retorna el número formateado o string.
+    return m;
+}
+
+function ejecutarComparacion() {
+    if (data1.length === 0 || data2.length === 0) {
+        alert('Debes cargar ambas planillas primero');
+        return;
+    }
+    
+    const fFactura = document.getElementById('colFactura').value;
+    const fRuc = document.getElementById('colRuc').value;
+    const fFecha = document.getElementById('colFecha').value;
+    const fMonto = document.getElementById('colMonto').value;
+
+    if (!fFactura || !fRuc) {
+        alert('Por favor, selecciona al menos la columna de N° Factura y RUC para la comparación.');
+        return;
+    }
+
+    // 1. Crear Mapas para búsqueda rápida
+    // Clave: Factura|RUC
+    const map1 = new Map();
+    data1.forEach(r => {
+        const key = `${limpiarFactura(r[fFactura])}|${limpiarRuc(r[fRuc])}`;
+        map1.set(key, r);
+    });
+
+    const map2 = new Map();
+    data2.forEach(r => {
+        const key = `${limpiarFactura(r[fFactura])}|${limpiarRuc(r[fRuc])}`;
+        map2.set(key, r);
+    });
+
+    const soloEn1 = [];
+    const soloEn2 = [];
+    const discrepancias = [];
+
+    // 2. Detectar Solo en 1 (Marangatu) y Discrepancias
+    data1.forEach(r1 => {
+        const key = `${limpiarFactura(r1[fFactura])}|${limpiarRuc(r1[fRuc])}`;
+        if (map2.has(key)) {
+            // Existe en ambas, comparar Monto y Fecha
+            const r2 = map2.get(key);
+            const monto1 = limpiarMonto(r1[fMonto]);
+            const monto2 = limpiarMonto(r2[fMonto]);
+            const fecha1 = r1[fFecha] ? String(r1[fFecha]).trim() : '';
+            const fecha2 = r2[fFecha] ? String(r2[fFecha]).trim() : '';
+            
+            // Comparación de montos numéricos
+            if (parseFloat(monto1) !== parseFloat(monto2)) {
+                discrepancias.push({ key, factura: r1[fFactura], ruc: r1[fRuc], r1, r2, campo: 'Monto' });
+            } else if (fecha1 !== fecha2 && fecha1 !== '' && fecha2 !== '') {
+                discrepancias.push({ key, factura: r1[fFactura], ruc: r1[fRuc], r1, r2, campo: 'Fecha' });
+            }
+        } else {
+            soloEn1.push(r1);
+        }
+    });
+
+    // 3. Detectar Solo en 2 (Contabilidad)
+    data2.forEach(r2 => {
+        const key = `${limpiarFactura(r2[fFactura])}|${limpiarRuc(r2[fRuc])}`;
+        if (!map1.has(key)) {
+            soloEn2.push(r2);
+        }
+    });
+
+    // 4. Renderizar
+    document.getElementById('count1').textContent = soloEn1.length;
+    document.getElementById('count2').textContent = soloEn2.length;
+    document.getElementById('countDiff').textContent = discrepancias.length;
+
+    document.getElementById('result1').innerHTML = renderTabla(soloEn1, headers1, [fFactura, fRuc, fFecha, fMonto]);
+    document.getElementById('result2').innerHTML = renderTabla(soloEn2, headers2, [fFactura, fRuc, fFecha, fMonto]);
+    
+    const divDiff = document.getElementById('discrepancias');
+    const resDiff = document.getElementById('resultDiff');
+    if (discrepancias.length > 0) {
+        divDiff.style.display = 'block';
+        let html = '<table><thead><tr><th>Factura</th><th>RUC</th><th>Campo</th><th>Valor Marangatu</th><th>Valor Contabilidad</th></tr></thead><tbody>';
+        discrepancias.forEach(d => {
+            const v1 = d.campo === 'Monto' ? limpiarMonto(d.r1[fMonto]) : d.r1[fFecha];
+            const v2 = d.campo === 'Monto' ? limpiarMonto(d.r2[fMonto]) : d.r2[fFecha];
+            html += `<tr>
+                <td><b>${d.factura}</b></td>
+                <td>${d.ruc}</td>
+                <td><span class="badge diff">${d.campo}</span></td>
+                <td style="background:#fff3cd">${v1}</td>
+                <td style="background:#d4edda">${v2}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        resDiff.innerHTML = html;
+    } else {
+        divDiff.style.display = 'none';
+    }
+
+    // Mostrar info general
+    const info = document.getElementById('info');
+    info.style.display = 'block';
+    info.innerHTML = `📋 Marangatu: <b>${data1.length}</b> filas | Contabilidad: <b>${data2.length}</b> filas`;
+}
+
+function renderTabla(rows, headers, camposAMostrar) {
+    if (rows.length === 0) return '<p style="color:#27ae60; font-weight:bold;">✅ Sin diferencias</p>';
+    
+    // Usar los encabezados seleccionados si existen en las filas, sino usar todos
+    const cols = camposAMostrar.filter(c => c && headers.includes(c));
+    const finalHeaders = cols.length > 0 ? cols : headers;
+
+    let html = '<table><thead><tr>' + finalHeaders.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+    rows.slice(0, 200).forEach(r => {
+        html += '<tr>' + finalHeaders.map(h => `<td>${r[h] ?? ''}</td>`).join('') + '</tr>';
+    });
+    html += '</tbody></table>';
+    if (rows.length > 200) html += `<p style="font-size:11px; text-align:center; margin-top:5px;">Mostrando 200 de ${rows.length} filas</p>`;
+    return html;
+}
+</script>
+</body>
+</html>
